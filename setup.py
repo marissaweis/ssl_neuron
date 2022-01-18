@@ -13,8 +13,8 @@ install_requires = [
     "matplotlib",
     "scipy==1.6.0",
     "scikit-learn==0.24.1",
-    "torch==1.5.0",
-    "torchvision==0.6.0"
+    "torch==1.7.1+cu110",
+    "torchvision==0.8.2+cu110"
 ]
 
 
