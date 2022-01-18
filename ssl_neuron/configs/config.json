@@ -1,0 +1,38 @@
+{
+    "model": {
+        "num_classes": 1000,
+        "dim": 32,
+        "depth": 7,
+        "n_head": 8,
+        "pos_dim": 32,
+        "move_avg": 0.999,
+        "center_avg": 0.9,
+        "teacher_temp": 0.06
+    },
+    "data": {
+        "class": "allen",
+        "n_nodes": 200,
+        "feat_dim": 8,
+        "batch_size": 64,
+        "num_workers": 6,
+        "jitter_var": 1,
+        "jitter_var_soma": 10,
+        "axis_rot": "y",
+        "n_drop_branch": 10,
+        "n_cum_jitter": 5,
+        "cum_jitter_strength": [
+            1,
+            0.5
+        ]
+    },
+    "optimizer": {
+        "lr": 0.0001,
+        "max_iter": 1000,
+        "exp_decay": 0.5
+    },
+    "trainer": {
+        "ckpt_dir": "./ckpts/",
+        "save_ckpt_every": 50,
+        "seed": null
+    }
+}
