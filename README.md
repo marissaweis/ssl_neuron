@@ -10,11 +10,11 @@ python3 setup.py install
 
 ## Data
 
-Download data from [ABA](http://celltypes.brain-map.org/).
+Download ABA data from [ABA](http://celltypes.brain-map.org/).
 
 ### Extract Data
 
-Extract data using [AllenSDK](https://allensdk.readthedocs.io/en/latest/).
+Extract data using the [Allen Software Development Kit](http://alleninstitute.github.io/AllenSDK/cell_types.html). See [demo notebook](http://alleninstitute.github.io/AllenSDK/_static/examples/nb/cell_types.html#Cell-Morphology-Reconstructions) on how to use the Allen Cell Types Database.
 
 
 ## Training
