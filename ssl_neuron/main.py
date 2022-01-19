@@ -13,7 +13,7 @@ def main(args):
     config = json.load(open(args.config))
     
     # load data
-    print('Loading dataset: {}'.format(config['data']['name']))
+    print('Loading dataset: {}'.format(config['data']['class']))
     train_loader, val_loader = build_dataloader(config)
 
     # build model 
