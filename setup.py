@@ -11,6 +11,7 @@ install_requires = [
     "tqdm",
     "seaborn",
     "matplotlib",
+    "networkx==2.5"
     "scipy==1.6.0",
     "scikit-learn==0.24.1",
     "torch==1.7.1+cu110",
