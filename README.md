@@ -23,3 +23,16 @@ python3 ssl_neuron/main.py --config=configs/config.json
 
 ## Demos
 For examples on how to load the data, train the model and perform inference with a pretrained model, see Jupyter notebooks in the [demos folder](https://github.com/marissaweis/ssl_neuron/tree/main/ssl_neuron/demos).
+
+
+## Citation
+
+If you use this repository in your research, please cite:
+```
+@article{Weis2021,
+      title={Self-supervised Representation Learning of Neuronal Morphologies}, 
+      author={Marissa A. Weis and Laura Pede and Timo Lüddecke and Alexander S. Ecker},
+      year={2021},
+      journal={arXiv}
+}
+```
