@@ -26,10 +26,6 @@ class BaseDataset(ABC, Dataset):
         self.n_drop_branch = config['data']['n_drop_branch']
         self.n_cum_jitter = config['data']['n_cum_jitter']
         self.jitter_var_soma = config['data']['jitter_var_soma']
-            
-        # avoids recomputing the leaf_branch_nodes and distances
-        # graph id -> leaf_branch_node, distances
-        self.graph_cache = dict()
 
 
     @abstractmethod
@@ -40,18 +36,13 @@ class BaseDataset(ABC, Dataset):
     def __len__(self):
         return self.num_samples
     
-    def _delete_subbranch(self, neighbors, soma_id, graph_id):
+    def _delete_subbranch(self, neighbors, soma_id):
 
-        if graph_id in self.graph_cache:
-            leaf_branch_nodes, distances = self.graph_cache[graph_id]
-        else:
-            # candidates for start nodes for deletion (here only leaf-branch nodes)
-            leaf_branch_nodes = get_leaf_branch_nodes(neighbors)
+        # candidates for start nodes for deletion (here only leaf-branch nodes)
+        leaf_branch_nodes = get_leaf_branch_nodes(neighbors)
 
-            # using the distances we can infer the direction of an edge
-            distances = compute_node_distances(soma_id[0], neighbors)
-        
-        self.graph_cache[graph_id] = leaf_branch_nodes, distances
+        # using the distances we can infer the direction of an edge
+        distances = compute_node_distances(soma_id[0], neighbors)
 
         leaf_branch_nodes = set(leaf_branch_nodes)
         not_deleted = set(range(len(neighbors))) 
@@ -62,10 +53,10 @@ class BaseDataset(ABC, Dataset):
 
         return not_deleted, distances
     
-    def _reduce_nodes(self, neighbors, soma_id, graph_id):
+    def _reduce_nodes(self, neighbors, soma_id):
         neighbors2 = {k: set(v) for k, v in neighbors.items()}
 
-        not_deleted, distances = self._delete_subbranch(neighbors2, soma_id, graph_id)
+        not_deleted, distances = self._delete_subbranch(neighbors2, soma_id)
 
         # subsample graphs
         neighbors2, not_deleted = subsample_graph(neighbors=neighbors2, not_deleted=not_deleted, keep_nodes=self.n_nodes, protected=soma_id)
@@ -120,10 +111,10 @@ class BaseDataset(ABC, Dataset):
         return features
     
 
-    def _augment(self, neighbors, features, soma_id, graph_id):
+    def _augment(self, neighbors, features, soma_id):
         
         # reduce nodes to N == n_nodes via subgraph deletion + subsampling
-        neighbors2, adj_matrix, not_deleted, distances = self._reduce_nodes(neighbors, soma_id, graph_id)
+        neighbors2, adj_matrix, not_deleted, distances = self._reduce_nodes(neighbors, soma_id)
 
         # extract features of not-deleted nodes
         new_features = features[not_deleted].copy()
