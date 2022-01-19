@@ -18,7 +18,7 @@ See [extract_allen_data.ipynb](https://github.com/marissaweis/ssl_neuron/blob/ma
 ## Training
 Start training GraphDINO from scratch on ABA dataset:
 ```
-python3 ssl_neuron/main.py --config=configs/config.json
+python3 ssl_neuron/main.py --config=ssl_neuron/configs/config.json
 ```
 
 ## Demos
