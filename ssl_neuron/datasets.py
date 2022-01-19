@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from ssl_neuron.utils import subsample_graph, rotate_graph, jitter_node_pos, neighbors_to_adjacency, compute_eig_lapl, get_leaf_branch_nodes, compute_node_distances, drop_random_branch, traverse_dir, cumulative_jitter, jitter_soma_depth
 
 
-DATA = './data/'
+DATA = 'ssl_neuron/data/'
 
 
 class BaseDataset(ABC, Dataset):
