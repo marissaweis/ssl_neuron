@@ -170,9 +170,9 @@ class AllenDataset(BaseDataset):
         features, neighbors = self.__getsingleitem__(index)
 
         # get two views
-        features1, adj_matrix1 = self._augment(neighbors, features, [0], index)
+        features1, adj_matrix1 = self._augment(neighbors, features, [0])
         
-        features2, adj_matrix2 = self._augment(neighbors, features, [0], index)
+        features2, adj_matrix2 = self._augment(neighbors, features, [0])
         
         # compute graph laplacian
         lapl1 = compute_eig_lapl(adj_matrix1)
