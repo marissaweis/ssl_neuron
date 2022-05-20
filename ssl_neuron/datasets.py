@@ -36,13 +36,7 @@ class BaseDataset(ABC, Dataset):
     def __len__(self):
         return self.num_samples
     
-    def _delete_subbranch(self, neighbors, soma_id):
-
-        # candidates for start nodes for deletion (here only leaf-branch nodes)
-        leaf_branch_nodes = get_leaf_branch_nodes(neighbors)
-
-        # using the distances we can infer the direction of an edge
-        distances = compute_node_distances(soma_id[0], neighbors)
+    def _delete_subbranch(self, neighbors, soma_id, distances, leaf_branch_nodes):
 
         leaf_branch_nodes = set(leaf_branch_nodes)
         not_deleted = set(range(len(neighbors))) 
@@ -50,13 +44,17 @@ class BaseDataset(ABC, Dataset):
             neighbors, drop_nodes = drop_random_branch(leaf_branch_nodes, neighbors, distances, keep_nodes=self.n_nodes)
             not_deleted -= drop_nodes
             leaf_branch_nodes -= drop_nodes
+            
+            if len(leaf_branch_nodes) == 0:
+                break
 
         return not_deleted, distances
-    
-    def _reduce_nodes(self, neighbors, soma_id):
+
+
+    def _reduce_nodes(self, neighbors, soma_id, distances, leaf_branch_nodes):
         neighbors2 = {k: set(v) for k, v in neighbors.items()}
 
-        not_deleted, distances = self._delete_subbranch(neighbors2, soma_id)
+        not_deleted = self._delete_subbranch(neighbors2, soma_id, distances, leaf_branch_nodes)
 
         # subsample graphs
         neighbors2, not_deleted = subsample_graph(neighbors=neighbors2, not_deleted=not_deleted, keep_nodes=self.n_nodes, protected=soma_id)
@@ -111,18 +109,18 @@ class BaseDataset(ABC, Dataset):
         return features
     
 
-    def _augment(self, neighbors, features, soma_id):
+    def _augment(self, cell):
         
         # reduce nodes to N == n_nodes via subgraph deletion + subsampling
-        neighbors2, adj_matrix, not_deleted, distances = self._reduce_nodes(neighbors, soma_id)
+        neighbors2, adj_matrix, not_deleted = self._reduce_nodes(cell['neighbors'], [cell['soma_id']], cell['distances'], cell['leaf_branch_nodes'])
 
         # extract features of not-deleted nodes
-        new_features = features[not_deleted].copy()
+        new_features = cell['features'][not_deleted].copy()
        
         # augment node position via roation and jittering
         new_features = self._augment_node_position(new_features)
           
-        new_features = self._cumulative_jitter(neighbors2, not_deleted, new_features, distances)
+        new_features = self._cumulative_jitter(neighbors2, not_deleted, new_features, cell['distances'])
 
         return new_features, adj_matrix
     
@@ -146,10 +144,18 @@ class AllenDataset(BaseDataset):
                 neighbors = pickle.load(f)
 
             if len(features) >= self.n_nodes:
+                
+                # compute distances of nodes to soma
+                leaf_branch_nodes = get_leaf_branch_nodes(neighbors)
+                # using the distances we can infer the direction of an edge
+                distances = compute_node_distances(0, neighbors)
+                
                 item = {}
                 item['cell_id'] = cell_id
                 item['features'] = features
                 item['neighbors'] = neighbors
+                item['distances'] = distances
+                item['leaf_branch_nodes'] = leaf_branch_nodes
 
                 self.cells[count] = item
                 count += 1
@@ -157,28 +163,19 @@ class AllenDataset(BaseDataset):
         self.num_samples = len(self.cells)
 
     
-    def __getsingleitem__(self, index): 
-        cell = self.cells[index]
-        return cell['features'], cell['neighbors']
-    
-    def __getsingleitem__(self, index): 
-        cell = self.cells[index]
-        return cell['features'], cell['neighbors']
-    
+#     def __getsingleitem__(self, index): 
+#         cell = self.cells[index]
+#         return cell['features'], cell['neighbors']
+
             
     def __getitem__(self, index): 
-        features, neighbors = self.__getsingleitem__(index)
+        cell = self.cells[index]
 
         # get two views
-        features1, adj_matrix1 = self._augment(neighbors, features, [0])
-        
-        features2, adj_matrix2 = self._augment(neighbors, features, [0])
-        
-        # compute graph laplacian
-        lapl1 = compute_eig_lapl(adj_matrix1)
-        lapl2 = compute_eig_lapl(adj_matrix2)
+        features1, adj_matrix1 = self._augment(cell)
+        features2, adj_matrix2 = self._augment(cell)
 
-        return (adj_matrix1, features1, lapl1), (adj_matrix2, features2, lapl2)
+        return features1, features2, adj_matrix1, adj_matrix2
 
     
     
