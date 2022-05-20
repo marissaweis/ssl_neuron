@@ -17,6 +17,10 @@ class GraphAttention(nn.Module):
         self.proj = nn.Linear(inner_dim, dim)
         
         self.predict_gamma = nn.Linear(dim, 2)
+        
+    @torch.jit.script
+    def fused_mul_add(a, b, c, d):
+        return (a * b) + (c * d)
 
     def forward(self, x, adj):
         B, N, C = x.shape
@@ -28,10 +32,10 @@ class GraphAttention(nn.Module):
         # compute bias towards graph adjacency metric
         gamma = self.predict_gamma(x)[:, None].repeat(1, self.num_heads, 1, 1)
         # add column/row to adjacency matrix for class token and repeat per attention head
-        bias = torch.eye(N, N)[None,None].repeat(B, self.num_heads, 1, 1).to(x.device)
+        bias = torch.eye(N, N, device=x.device)[None,None].repeat(B, self.num_heads, 1, 1)
         bias[:, :, 1:, 1:] = adj[:,None].repeat(1, self.num_heads, 1, 1)
         # weighted sum of transformer attention and adjacency matrix
-        attn = gamma[:, :, :, 0:1] * attn + gamma[:, :, :, 1:2] * bias
+        attn = self.fused_mul_add(gamma[:, :, :, 0:1], attn, gamma[:, :, :, 1:2], bias)
         
         attn = attn.softmax(dim=-1)
 
