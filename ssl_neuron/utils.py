@@ -163,7 +163,7 @@ def adjacency_to_neighbors(adj_matrix):
     return neigh
 
 
-def compute_eig_lapl(adj_matrix, pos_enc_dim=32):
+def compute_eig_lapl_batch(adj_matrix, pos_enc_dim=32):
     """ 
     Compute positional encoding using graph laplacian.
     Args:
@@ -174,16 +174,18 @@ def compute_eig_lapl(adj_matrix, pos_enc_dim=32):
     """
     
     # Laplacian
-    A = adj_matrix.astype(float)
-    degree_matrix = adj_matrix.sum(axis=0).clip(1)
-    N = np.diag(degree_matrix ** -0.5)
-    L = np.eye(len(adj_matrix)) - (N @ adj_matrix) @ N
+    A = adj_matrix.float()
+    degree_matrix = A.sum(axis=1).clip(1)
+    N = torch.diag_embed(degree_matrix ** -0.5)
+    L = torch.eye(n, device=A.device)[None, ].repeat(b, 1, 1) - (N @ A) @ N
 
     # Eigenvectors with numpy
-    eig_val, eig_vec = np.linalg.eig(L)
-    idx = eig_val.argsort() # increasing order
-    eig_val, eig_vec = eig_val[idx], np.real(eig_vec[:,idx])
-    pos_enc = torch.from_numpy(eig_vec[:, 1:pos_enc_dim + 1]).float()
+    eig_val, eig_vec = torch.linalg.eigh(L)
+    eig_vec = torch.flip(eig_vec, dims=[2])
+    pos_enc = eig_vec[:, :, 1:pos_enc_dim + 1]
+
+    if pos_enc.size(2) < pos_enc_dim:
+        pos_enc = torch.cat([pos_enc, torch.zeros(pos_enc.size(0), pos_enc.size(1), pos_enc_dim - pos_enc.size(2), device=A.device)], dim=2)
 
     return pos_enc
 
