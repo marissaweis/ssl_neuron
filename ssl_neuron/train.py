@@ -54,17 +54,16 @@ class Trainer(object):
     def _train_epoch(self, epoch):
         self.model.train()
         losses = AverageMeter()
-        for i, ((a1, f1, l1), (a2, f2, l2)) in enumerate(self.train_loader, 0):
-            a1 = a1.float().to(self.device)
-            a2 = a2.float().to(self.device)
-            f1 = f1.float().to(self.device)
-            f2 = f2.float().to(self.device)
-            l1 = l1.float().to(self.device)
-            l2 = l2.float().to(self.device)
+        for i, data in enumerate(self.train_loader, 0):
+            f1, f2, a1, a2 = [x.float().to(self.device, non_blocking=True) for x in data]
             n = a1.shape[0]
 
+            # compute positional encoding
+            l1 = compute_eig_lapl_torch_batch(a1)
+            l2 = compute_eig_lapl_torch_batch(a2)
+            
             self.lr = self.set_lr()
-            self.optimizer.zero_grad()
+            self.optimizer.zero_grad(set_to_none=True)
             
             loss = self.model(f1, f2, a1, a2, l1, l2)
 
