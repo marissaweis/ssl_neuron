@@ -1,7 +1,7 @@
 import os
 import torch
 import torch.optim as optim
-from ssl_neuron.utils import AverageMeter
+from ssl_neuron.utils import AverageMeter, compute_eig_lapl_torch_batch
 
 class Trainer(object):
     def __init__(self, config, model, dataloaders):
@@ -41,11 +41,11 @@ class Trainer(object):
         self.curr_iter = 0
         epoch = 0
         while self.curr_iter < self.max_iter:
-            # run epoch
+            # Run one epoch.
             self._train_epoch(epoch)
 
             if epoch % self.save_every == 0:
-                # save checkpoint
+                # Save checkpoint.
                 self._save_checkpoint(epoch)
             
             epoch += 1

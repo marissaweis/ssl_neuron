@@ -4,48 +4,77 @@
 import copy
 import torch
 import torch.nn as nn
+from typing import Any
+
 
 class GraphAttention(nn.Module):
-    def __init__(self, dim, num_heads=8, qkv_bias=False):
-        super().__init__()
-        inner_dim = dim * num_heads
-        self.num_heads = num_heads
-        head_dim = inner_dim // num_heads
-        self.scale = head_dim ** -0.5
+    """ Implements GraphAttention.
 
-        self.qkv = nn.Linear(dim, inner_dim * 3, bias=qkv_bias)
-        self.proj = nn.Linear(inner_dim, dim)
+    Graph Attention interpolates global transformer attention
+    (all nodes attend to all other nodes based on their
+    dot product similarity) and message passing (nodes attend
+    to their 1-order neighbour based on dot-product
+    attention).
+
+    Attributes:
+        dim: Dimensionality of key, query and value vectors.
+        num_heads: Number of parallel attention heads.
+        bias: If set to `True`, use bias in input projection layers.
+          Default is `False`.
+        use_exp: If set to `True`, use the exponential of the predicted
+          weights to trade-off global and local attention.
+    """
+    def __init__(self,
+                 dim: int,
+                 num_heads: int = 8,
+                 bias: bool = False,
+                 use_exp: bool = True) -> nn.Module:
+        super().__init__()
+        self.dim = dim
+        self.num_heads = num_heads
+        self.scale = dim ** -0.5
+        self.use_exp = use_exp
+
+        self.qkv_projection = nn.Linear(dim, dim * num_heads * 3, bias=bias)
+        self.proj = nn.Linear(dim * num_heads, dim)
         
+        # Weigth to trade of local vs. global attention.
         self.predict_gamma = nn.Linear(dim, 2)
+        # Initialize projection such that gamma is close to 1
+        # in the beginning of training.
+        self.predict_gamma.weight.data.uniform_(0.0, 0.01)
+
         
     @torch.jit.script
     def fused_mul_add(a, b, c, d):
         return (a * b) + (c * d)
 
     def forward(self, x, adj):
-        B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv.unbind(0)   # make torchscript happy (cannot use tensor as tuple)
+        B, N, C = x.shape # (batch x num_nodes x feat_dim)
+        qkv = self.qkv_projection(x).view(B, N, 3, self.num_heads, self.dim).permute(0, 3, 1, 2, 4)
+        query, key, value = qkv.unbind(dim=3) # (batch x num_heads x num_nodes x dim)
 
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        
-        # compute bias towards graph adjacency metric
+        attn = (query @ key.transpose(-2, -1)) * self.scale # (batch x num_heads x num_nodes x num_nodes)
+
+        # Predict trade-off weight per node
         gamma = self.predict_gamma(x)[:, None].repeat(1, self.num_heads, 1, 1)
-        # add column/row to adjacency matrix for class token and repeat per attention head
-        bias = torch.eye(N, N, device=x.device)[None,None].repeat(B, self.num_heads, 1, 1)
-        bias[:, :, 1:, 1:] = adj[:,None].repeat(1, self.num_heads, 1, 1)
-        # weighted sum of transformer attention and adjacency matrix
-        attn = self.fused_mul_add(gamma[:, :, :, 0:1], attn, gamma[:, :, :, 1:2], bias)
+        if self.use_exp:
+            # Parameterize gamma to always be positive
+            gamma = torch.exp(gamma)
+
+        adj = adj[:, None].repeat(1, self.num_heads, 1, 1)
+
+        # Compute trade-off between local and global attention.
+        attn = self.fused_mul_add(gamma[:, :, :, 0:1], attn, gamma[:, :, :, 1:2], adj)
         
         attn = attn.softmax(dim=-1)
 
-        x = (attn @ v).transpose(1, 2).reshape(B, N, -1)
-        x = self.proj(x)
-        return x
+        x = (attn @ value).transpose(1, 2).reshape(B, N, -1) # (batch_size x num_nodes x (num_heads * dim))
+        return self.proj(x)
     
     
-class Mlp(nn.Module):
-    def __init__(self, dim, hidden_dim):
+class MLP(nn.Module):
+    def __init__(self, dim: int, hidden_dim: int) -> nn.Module:
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(dim, hidden_dim),
@@ -56,15 +85,21 @@ class Mlp(nn.Module):
         return self.net(x)
 
 
-class Block(nn.Module):
-    def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False,
-                 act_layer=nn.GELU, norm_layer=nn.LayerNorm):
+class AttentionBlock(nn.Module):
+    """ Implements an attention block.
+    """
+    def __init__(self,
+                 dim: int,
+                 num_heads: int,
+                 mlp_ratio: int = 4,
+                 bias: bool = False,
+                 use_exp: bool = True,
+                 norm_layer: Any = nn.LayerNorm) -> nn.Module:
         super().__init__()
         self.norm1 = norm_layer(dim)
-        self.attn = GraphAttention(dim, num_heads=num_heads, qkv_bias=qkv_bias)
+        self.attn = GraphAttention(dim, num_heads=num_heads, bias=bias, use_exp=use_exp)
         self.norm2 = norm_layer(dim)
-        mlp_hidden_dim = int(dim * mlp_ratio)
-        self.mlp = Mlp(dim=dim, hidden_dim=mlp_hidden_dim)
+        self.mlp = MLP(dim=dim, hidden_dim=dim * mlp_ratio)
 
     def forward(self, x, a):
         x = self.norm1(x)
@@ -75,22 +110,24 @@ class Block(nn.Module):
     
     
 class GraphTransformer(nn.Module):
-    def __init__(self, n_nodes=200, 
-                 dim=32, 
-                 depth=5, 
-                 heads=8, 
-                 mlp_ratio=2., 
-                 feat_dim=8,
-                 num_classes=1000, 
-                 pos_dim=32,
-                 proj_dim=128):
+    def __init__(self,
+                 n_nodes: int = 200,
+                 dim: int = 32,
+                 depth: int = 5,
+                 num_heads: int = 8,
+                 mlp_ratio: int = 2,
+                 feat_dim: int = 8,
+                 num_classes: int = 1000,
+                 pos_dim: int = 32,
+                 proj_dim: int = 128,
+                 use_exp: bool = True) -> nn.Module:
         super().__init__()
 
         self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
         self.cls_pos_embedding = nn.Parameter(torch.randn(1, 1, dim))
 
         self.blocks = nn.Sequential(*[
-            Block(dim=dim, num_heads=heads, mlp_ratio=mlp_ratio)
+            AttentionBlock(dim=dim, num_heads=num_heads, mlp_ratio=mlp_ratio, use_exp=use_exp)
             for i in range(depth)])
 
         self.to_pos_embedding = nn.Linear(pos_dim, dim)
@@ -99,7 +136,7 @@ class GraphTransformer(nn.Module):
             nn.LayerNorm(dim),
             nn.Linear(dim, dim)
         )
-        
+
         self.projector = nn.Sequential(
             nn.Linear(dim, proj_dim),
             nn.GELU(),
@@ -110,80 +147,101 @@ class GraphTransformer(nn.Module):
             nn.LayerNorm(proj_dim),
             nn.Linear(proj_dim, num_classes)
         )
-        
-        self.to_patch_embedding = nn.Sequential(
-            nn.Linear(feat_dim, dim*2),
+
+        self.to_node_embedding = nn.Sequential(
+            nn.Linear(feat_dim, dim * 2),
             nn.ReLU(True),
-            nn.Linear(dim*2, dim)
+            nn.Linear(dim * 2, dim)
         )
 
-    def forward(self, graph, adj, lapl):
-        x = self.to_patch_embedding(graph)
-        b, n, _ = x.shape
+    def forward(self, node_feat, adj, lapl):
+        B, N, _ = node_feat.shape
 
+        # Compute initial node embedding.
+        x = self.to_node_embedding(node_feat)
+
+        # Compute positional encoding
         pos_embedding_token = self.to_pos_embedding(lapl)
-        cls_pos_enc = self.cls_pos_embedding.expand(x.shape[0], -1, -1)
+
+        # Add "classification" token
+        cls_pos_enc = self.cls_pos_embedding.repeat(B, 1, 1)
         pos_embedding = torch.cat((cls_pos_enc, pos_embedding_token), dim=1)
 
-        cls_tokens = self.cls_token.expand(x.shape[0], -1, -1)
+        cls_tokens = self.cls_token.repeat(B, 1, 1)
         x = torch.cat((cls_tokens, x), dim=1)
+
+        # Add classification token entry to adjanceny matrix. 
+        adj_cls = torch.zeros(B, N + 1, N + 1, device=node_feat.device)
+        # TODO(test if useful)
+        adj_cls[:, 0, 0] = 1.
+        adj_cls[:, 1:, 1:] = adj
 
         x += pos_embedding
         for block in self.blocks:
-            x = block(x, adj)
+            x = block(x, adj_cls)
         x = x[:, 0]
         x = self.mlp_head(x)
 
         return x, self.projector(x)
 
 
+class ExponentialMovingAverage():
+    """ Exponential moving average.
 
-# exponential moving average
-class EMA():
-    def __init__(self, beta):
+    Attributes:
+        decay: Moving average decay parameter in [0., 1.] (float).
+    """
+    def __init__(self, decay: float):
         super().__init__()
-        self.beta = beta
+        self.decay = decay
+        assert (decay > 0.) and (decay < 1.), 'Decay must be in [0., 1.]'
 
-    def update_average(self, old, new, gamma=None):
-        if old is None:
-            return new
-        if gamma is not None:
-            return old * gamma + (1 - gamma) * new
+    def update_average(
+        self,
+        previous_state: torch.Tensor,
+        update: torch.Tensor,
+        decay: float = None,
+    ):
+        if previous_state is None:
+            return update
+        if decay is not None:
+            return previous_state * decay + (1 - decay) * update
         else:
-            return old * self.beta + (1 - self.beta) * new
+            return previous_state * self.decay + (1 - self.decay) * update
 
-def update_moving_average(ema_updater, ma_model, current_model, gamma=None):
-    for current_params, ma_params in zip(current_model.parameters(), ma_model.parameters()):
-        old_weight, up_weight = ma_params.data, current_params.data
-        ma_params.data = ema_updater.update_average(old_weight, up_weight, gamma=None)
 
-class GraphDino(nn.Module):
+def update_moving_average(ema_updater, teacher_model, student_model, decay=None):
+    for student_params, teacher_params in zip(student_model.parameters(), teacher_model.parameters()):
+        teacher_weights, weight_update = teacher_params.data, student_params.data
+        teacher_params.data = ema_updater.update_average(teacher_weights, weight_update, decay=decay)
+
+
+class GraphDINO(nn.Module):
     def __init__(
         self,
-        transformer,
-        num_classes=1000,
-        student_temp=0.9,
-        teacher_temp=0.06,
-        moving_average_decay=0.999,
-        center_moving_average_decay=0.9,
-        pos_dim=32,
-        n_feat=8,
-        n_nodes=200
+        transformer: nn.Module,
+        num_classes: int = 1000,
+        student_temp: float = 0.9,
+        teacher_temp: float = 0.06,
+        moving_average_decay: float = 0.999,
+        center_moving_average_decay: float = 0.9,
     ):
         super().__init__()
 
         self.student_encoder = transformer
         self.teacher_encoder = copy.deepcopy(self.student_encoder)
 
+        # Weights of teacher model are updated using an exponential moving
+        # average of the student model. Thus, disable gradient update.
         for p in self.teacher_encoder.parameters():
             p.requires_grad = False
 
-        self.teacher_ema_updater = EMA(moving_average_decay)
+        self.teacher_ema_updater = ExponentialMovingAverage(moving_average_decay)
 
         self.register_buffer('teacher_centers', torch.zeros(1, num_classes))
-        self.register_buffer('last_teacher_centers',  torch.zeros(1, num_classes))
+        self.register_buffer('previous_centers',  torch.zeros(1, num_classes))
 
-        self.teacher_centering_ema_updater = EMA(center_moving_average_decay)
+        self.teacher_centering_ema_updater = ExponentialMovingAverage(center_moving_average_decay)
 
         self.student_temp = student_temp
         self.teacher_temp = teacher_temp
@@ -195,54 +253,55 @@ class GraphDino(nn.Module):
         loss = - (teacher_probs * torch.log(student_probs + eps)).sum(dim = -1).mean()
         return loss
 
-    def update_moving_average(self, gamma=None):
-        update_moving_average(self.teacher_ema_updater, self.teacher_encoder, self.student_encoder, gamma=None)
+    def update_moving_average(self, decay=None):
+        update_moving_average(self.teacher_ema_updater, self.teacher_encoder, self.student_encoder, decay=decay)
 
-        new_teacher_centers = self.teacher_centering_ema_updater.update_average(self.teacher_centers, self.last_teacher_centers)
+        new_teacher_centers = self.teacher_centering_ema_updater.update_average(self.teacher_centers, self.previous_centers)
         self.teacher_centers.copy_(new_teacher_centers)
 
-    def forward(self, x1, x2, a1, a2, l1, l2):
+    def forward(self, node_feat1, node_feat2, adj1, adj2, lapl1, lapl2):
+        batch_size = node_feat1.shape[0]
 
-        _, student_proj_one = self.student_encoder(x1, a1, l1)
-        _, student_proj_two = self.student_encoder(x2, a2, l2)
+        # Concatenate the two views to compute embeddings as one batch.
+        node_feat = torch.cat([node_feat1, node_feat2], dim=0)
+        adj = torch.cat([adj1, adj2], dim=0)
+        lapl = torch.cat([lapl1, lapl2], dim=0)
+
+        _, student_proj = self.student_encoder(node_feat, adj, lapl)
+        student_proj1, student_proj2 = torch.split(student_proj, batch_size, dim=0)
 
         with torch.no_grad():
-            _, teacher_proj_one = self.teacher_encoder(x1, a1, l1)
-            _, teacher_proj_two = self.teacher_encoder(x2, a2, l2)
+            _, teacher_proj = self.teacher_encoder(node_feat, adj, lapl)
+            teacher_proj1, teacher_proj2 = torch.split(teacher_proj, batch_size, dim=0)
 
-        teacher_logits_avg = torch.cat((teacher_proj_one, teacher_proj_two)).mean(dim = 0)
-        self.last_teacher_centers.copy_(teacher_logits_avg)
+        teacher_logits_avg = teacher_proj.mean(dim = 0)
+        self.previous_centers.copy_(teacher_logits_avg)
 
-        loss1 = self.compute_loss(teacher_proj_one, student_proj_two)
-        loss2 = self.compute_loss(teacher_proj_two, student_proj_one)
+        loss1 = self.compute_loss(teacher_proj1, student_proj2)
+        loss2 = self.compute_loss(teacher_proj2, student_proj1)
         loss = (loss1 + loss2) / 2
 
         return loss
-    
-    
+
+
 def create_model(config):
     num_classes = config['model']['num_classes']
-    n_nodes = config['data']['n_nodes']
-    pos_dim = config['model']['pos_dim']
-    teacher_temp = config['model']['teacher_temp']
 
-    
-    transformer = GraphTransformer(n_nodes=n_nodes, 
+    # Create encoder.
+    transformer = GraphTransformer(n_nodes=config['data']['n_nodes'],
                  dim=config['model']['dim'], 
                  depth=config['model']['depth'], 
-                 heads=config['model']['n_head'],
+                 num_heads=config['model']['n_head'],
                  feat_dim=config['data']['feat_dim'],
-                 pos_dim=pos_dim,
+                 pos_dim=config['model']['pos_dim'],
                  num_classes=num_classes)
-    
-    model = GraphDino(transformer, 
+
+    # Create GraphDINO.
+    model = GraphDINO(transformer,
                  num_classes=num_classes, 
-                 n_nodes=n_nodes, 
-                 pos_dim=pos_dim, 
-                 n_feat=config['data']['feat_dim'],
                  moving_average_decay=config['model']['move_avg'],
                  center_moving_average_decay=config['model']['center_avg'],
-                 teacher_temp=teacher_temp
+                 teacher_temp=config['model']['teacher_temp']
                 )
     
     return model

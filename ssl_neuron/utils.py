@@ -7,7 +7,7 @@ from scipy.spatial.transform import Rotation as R
 
     
 class AverageMeter(object):
-    """ Computes and stores the average and current value """
+    """ Computes and stores the average and current value."""
     def __init__(self):
         self.reset()
 
@@ -24,10 +24,10 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
         
         
-def subsample_graph(neighbors=None, not_deleted=None, keep_nodes=200, 
-                    protected=[0]):
+def subsample_graph(neighbors=None, not_deleted=None, keep_nodes=200, protected=[0]):
     """ 
     Subsample graph.
+
     Args:
         neighbors: dict of neighbors per node
         not_deleted: list of nodes, who did not get deleted in previous processing steps
@@ -78,13 +78,18 @@ def subsample_graph(neighbors=None, not_deleted=None, keep_nodes=200,
     return neighbors, not_deleted
 
 
+
 def rotate_graph(pos_matrix, axis=None):
-    """ 
-    Randomly rotate graph in xyz-direction.
+    ''' Randomly rotate graph in xyz-direction.
+
     Args:
-        pos_matrix: matrix with xyz-node positions (N x 3).
-        axis: rotate graph around axis; Possible values: x, y, z, no_rot'
-    """
+        pos_matrix: Matrix with xyz-node positions (N x 3).
+        axis: Axis around which to rotate. Defaults to `None`,
+            in which case no rotation is performed.
+    '''
+    if axis is None:
+        return pos_matrix
+
     rotation_matrix = R.random().as_matrix()
     
     if axis == 'x':
@@ -105,31 +110,61 @@ def rotate_graph(pos_matrix, axis=None):
         rotation_matrix[2, 2] = 1
         rotation_matrix[2, 0] = 0
         rotation_matrix[2, 1] = 0
-    elif axis == 'no_rot':
-        rotation_matrix = np.eye(3)
-    else:
-        raise ValueError('Possible values: x, y, z, no_rot')
 
     rot_pos_matrix = pos_matrix @ rotation_matrix
     return rot_pos_matrix
 
 
-def jitter_node_pos(pos_matrix, scale=1):
+def jitter_node_pos(node_positions, scale=1):
     """ 
     Randomly jitter nodes in xyz-direction.
+
     Args:
-        pos_matrix: matrix with xyz-node positions (N x 3).
-        scale: scale factor of jittering
+        node_positions: Matrix with xyz-node positions (N x 3).
+        scale: Scale factor for jittering.
     """
-    return pos_matrix + (torch.randn(*pos_matrix.shape).numpy() * scale)
+    return node_positions + (torch.randn(*node_positions.shape).numpy() * scale)
+
+
+def translate_soma_pos(node_positions, scale=1):
+    """ 
+    Randomly translate the position of the entire grpah.
+
+    Args:
+        node_positions: Matrix with xyz-node positions (N x 3).
+        scale: Scale factor for jittering.
+    """
+    new_node_features = node_positions.copy()
+    jitter = torch.randn(3).numpy() * scale
+    new_node_features[:, :3] += jitter
+    return new_node_features
+
+
+def neighbors_to_adjacency_torch(neighbors, not_deleted):
+    """ Create adjacency matrix from list of non-empty neighbors.
+    """
+    node_map = {n: i for i, n in enumerate(not_deleted)}
+
+    n_nodes = len(not_deleted)
+
+    new_adj_matrix = torch.zeros((n_nodes, n_nodes), dtype=float)
+    for ii in neighbors.keys():
+        for jj in neighbors[ii]:
+            i, j = node_map[ii], node_map[jj]
+            new_adj_matrix[i, i] = True  # diagonal if needed
+            new_adj_matrix[i, j] = True
+            new_adj_matrix[j, i] = True
+
+    return new_adj_matrix
 
 
 def neighbors_to_adjacency(neighbors, not_deleted):
     """ 
     Create adjacency matrix from list of non-empty neighbors. 
+
     Args:
-        neighbors: dict of neighbors per node
-        not_deleted: list of nodes, who did not get deleted in previous processing steps
+        neighbors: Dict of neighbors per node.
+        not_deleted: List of nodes, who did not get deleted in previous processing steps.
     """
     node_map = {n: i for i, n in enumerate(not_deleted)}
     
@@ -152,9 +187,8 @@ def adjacency_to_neighbors(adj_matrix):
     Args:
         adj_matrix: adjacency matrix (N x N)
     """
-    # remove diagonal to avoid self-neighbors
+    # Remove diagonal to avoid self-neighbors.
     a, b = np.where(adj_matrix - np.eye(len(adj_matrix)) == 1)
-    from collections import defaultdict
     neigh = dict()
     for _a, _b in zip(a,b):
         if _a not in neigh:
@@ -163,15 +197,15 @@ def adjacency_to_neighbors(adj_matrix):
     return neigh
 
 
-def compute_eig_lapl_batch(adj_matrix, pos_enc_dim=32):
-    """ 
-    Compute positional encoding using graph laplacian.
+def compute_eig_lapl_torch_batch(adj_matrix, pos_enc_dim=32):
+    """ Compute positional encoding using graph laplacian.
+        Adapted from https://github.com/graphdeeplearning/benchmarking-gnns/blob/ef8bd8c7d2c87948bc1bdd44099a52036e715cd0/data/molecules.py#L147-L168.
+    
     Args:
-        adj_matrix: adjacency matrix (N x N)
-        pos_enc_dim: output dimensions of positional encoding.
-
-    Adapted from https://github.com/graphdeeplearning/benchmarking-gnns/blob/ef8bd8c7d2c87948bc1bdd44099a52036e715cd0/data/molecules.py#L147-L168.
+        adj_matrix: Adjacency matrix (B x N x N).
+        pos_enc_dim: Output dimensions of positional encoding.
     """
+    b, n, _ = adj_matrix.size()
     
     # Laplacian
     A = adj_matrix.float()
@@ -179,7 +213,7 @@ def compute_eig_lapl_batch(adj_matrix, pos_enc_dim=32):
     N = torch.diag_embed(degree_matrix ** -0.5)
     L = torch.eye(n, device=A.device)[None, ].repeat(b, 1, 1) - (N @ A) @ N
 
-    # Eigenvectors with numpy
+    # Eigenvectors
     eig_val, eig_vec = torch.linalg.eigh(L)
     eig_vec = torch.flip(eig_vec, dims=[2])
     pos_enc = eig_vec[:, :, 1:pos_enc_dim + 1]
@@ -239,14 +273,14 @@ def compute_node_distances(idx, neighbors):
 
 def drop_random_branch(nodes, neighbors, distances, keep_nodes=200):
     """ 
-    Removes a branch, but ignores if branching nodes are affected. 
-    solution: Starting nodes should be between branching node and leaf (see leaf_branch_nodes)
+    Removes a terminal branch. Starting nodes should be between
+    branching node and leaf (see leaf_branch_nodes)
 
     Args:
-        nodes: list of nodes of the graph
-        neighbors: dict of neighbors per node
-        distances: dict of distances of nodes to origin
-        keep_nodes: number of nodes to keep in graph
+        nodes: List of nodes of the graph
+        neighbors: Dict of neighbors per node
+        distances: Dict of distances of nodes to origin
+        keep_nodes: Number of nodes to keep in graph
     """
     start = list(nodes)[torch.randint(len(nodes), (1,)).item()]
     to = list(neighbors[start])[0]
@@ -265,7 +299,7 @@ def drop_random_branch(nodes, neighbors, distances, keep_nodes=200):
     if len(neighbors) - len(drop_nodes) < keep_nodes:
         return neighbors, set()
     else:
-        # delete nodes
+        # Delete nodes.
         for key in drop_nodes:
             if key in neighbors:
                 for k in neighbors[key]:
@@ -294,33 +328,28 @@ def traverse_dir(start, to, neighbors):
     return visited
 
 
-def cumulative_jitter(nodes_to_leaf, feats, strength=(1000, 300)):
+def remap_neighbors(x):
     """ 
-    Apply cumulative jitter to graph. 
+    Remap node indices to be between 0 and the number of nodes.
+
     Args:
-        nodes_to_leaf: indices of nodes from start node to leaf
-        feats: features per node
-        strength: strength scale for the jittering
+        x: Dict of node id mapping to the node's neighbors.
+    Returns:
+        ordered_x: Dict with neighbors with new node ids.
+        subsampled2new: Mapping between old and new indices (dict).
     """
-    jitter = (2 * torch.rand(3) - 1) * strength[0]
-    for _, n in enumerate(nodes_to_leaf):
-        temp = torch.tensor(feats[n])[:3] + jitter
-        feats[n][:3] = tuple(temp.tolist())
-        jitter += (2 * torch.rand(3) - 1) * strength[1]
+    # Create maps between new and old indices.
+    subsampled2new = {k: i for i, k in enumerate(sorted(x))}
 
-    return feats
+    # Re-map indices to 1..N.
+    ordered_x = {i: x[k] for i, k in enumerate(sorted(x))}
 
+    # Re-map keys of neighbors
+    for k in ordered_x:
+        ordered_x[k] = {subsampled2new[x] for x in ordered_x[k]}
 
-def jitter_soma_depth(feats, scale=10):
-    """"
-    Apply jitter to soma depth.
-    Args:
-        feats: features per node
-        scale: scale factor of jittering
-    """
-    new_feats = feats.copy()
-    new_feats[:, 1] += torch.randn(1).numpy() * scale
-    return new_feats
+    return ordered_x, subsampled2new
+
 
 
 def plot_neuron(neighbors, node_feats, ax1=0, ax2=1, soma_id=0, ax=None):

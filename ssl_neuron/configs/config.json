@@ -11,19 +11,15 @@
     },
     "data": {
         "class": "allen",
+        "path": "data/",
         "n_nodes": 200,
         "feat_dim": 8,
         "batch_size": 64,
         "num_workers": 6,
         "jitter_var": 1,
-        "jitter_var_soma": 10,
-        "axis_rot": "y",
-        "n_drop_branch": 10,
-        "n_cum_jitter": 5,
-        "cum_jitter_strength": [
-            1,
-            0.5
-        ]
+        "translate_var": 10,
+        "rotation_axis": "y",
+        "n_drop_branch": 10
     },
     "optimizer": {
         "lr": 0.0001,

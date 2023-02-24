@@ -1,41 +1,87 @@
-import os
 import torch
 import pickle
 import numpy as np
-from torch.utils.data import Dataset
 from tqdm import tqdm
-from abc import ABC, abstractmethod
+from pathlib import Path
+from torch.multiprocessing import Manager
+from torch.utils.data import Dataset, DataLoader
 
-from ssl_neuron.utils import subsample_graph, rotate_graph, jitter_node_pos, neighbors_to_adjacency, compute_eig_lapl, get_leaf_branch_nodes, compute_node_distances, drop_random_branch, traverse_dir, cumulative_jitter, jitter_soma_depth
+from ssl_neuron.utils import subsample_graph, rotate_graph, jitter_node_pos, translate_soma_pos, get_leaf_branch_nodes, compute_node_distances, drop_random_branch, remap_neighbors, neighbors_to_adjacency_torch
 
 
-DATA = 'ssl_neuron/data/'
+class GraphDataset(Dataset):
+    """ Dataset of neuronal graphs.
 
-
-class BaseDataset(ABC, Dataset):
-    def __init__(self, config, mode='train'):
+    Neuronal graphs are assumed to be soma-centered (i.e. soma node
+    position is (0, 0, 0) and axons have been removed. Node positions
+    are assumed to be in microns and y-axis is orthogonal to the pia.
+    """
+    def __init__(self, config, mode='train', inference=False):
 
         self.config = config
         self.mode = mode
+        self.inference = inference
+        data_path = config['data']['path']
+
+        # Augmentation parameters.
+        self.jitter_var = config['data']['jitter_var']
+        self.rotation_axis = config['data']['rotation_axis']
+        self.n_drop_branch = config['data']['n_drop_branch']
+        self.translate_var = config['data']['translate_var']
         self.n_nodes = config['data']['n_nodes']
 
-        # augmentation parameters
-        self.jitter_var = config['data']['jitter_var']
-        self.axis_rot = config['data']['axis_rot']
-        self.cum_jitter_strength = config['data']['cum_jitter_strength']
-        self.n_drop_branch = config['data']['n_drop_branch']
-        self.n_cum_jitter = config['data']['n_cum_jitter']
-        self.jitter_var_soma = config['data']['jitter_var_soma']
+        # Load cell ids.
+        cell_ids = list(np.load(Path(data_path, f'{mode}_ids.npy')))
 
+        # Load graphs.
+        self.manager = Manager()
+        self.cells = self.manager.dict()
+        count = 0
+        for cell_id in tqdm(cell_ids):
+            # Adapt for datasets where this is not true.
+            soma_id = 0
 
-    @abstractmethod
-    def __getitem__(self, index):
-        cell_id = self.cell_ids[index]
-        return cell_id
+            features = np.load(Path(data_path, 'skeletons', str(cell_id), 'features.npy'))
+            with open(Path(data_path, 'skeletons', str(cell_id), 'neighbors.pkl'), 'rb') as f:
+                neighbors = pickle.load(f)
+
+            assert len(features) == len(neighbors)
+
+            if len(features) >= self.n_nodes or self.inference:
+                
+                # Subsample graphs for faster processing during training.
+                neighbors, not_deleted = subsample_graph(neighbors=neighbors, 
+                                                         not_deleted=set(range(len(neighbors))), 
+                                                         keep_nodes=1000, 
+                                                         protected=[soma_id])
+                # Remap neighbor indices to 0..999.
+                neighbors, subsampled2new = remap_neighbors(neighbors)
+                soma_id = subsampled2new[soma_id]
+
+                # Accumulate features of subsampled nodes.
+                features = features[list(subsampled2new.keys())]
+
+                leaf_branch_nodes = get_leaf_branch_nodes(neighbors)
+                # Using the distances we can infer the direction of an edge.
+                distances = compute_node_distances(soma_id, neighbors)
+
+                item = {
+                    'cell_id': cell_id,
+                    'features': features, 
+                    'neighbors': neighbors,
+                    'distances': distances,
+                    'soma_id': soma_id,
+                    'leaf_branch_nodes': leaf_branch_nodes,
+                }
+
+                self.cells[count] = item
+                count += 1
+
+        self.num_samples = len(self.cells)
 
     def __len__(self):
         return self.num_samples
-    
+
     def _delete_subbranch(self, neighbors, soma_id, distances, leaf_branch_nodes):
 
         leaf_branch_nodes = set(leaf_branch_nodes)
@@ -48,151 +94,93 @@ class BaseDataset(ABC, Dataset):
             if len(leaf_branch_nodes) == 0:
                 break
 
-        return not_deleted, distances
-
+        return not_deleted
 
     def _reduce_nodes(self, neighbors, soma_id, distances, leaf_branch_nodes):
         neighbors2 = {k: set(v) for k, v in neighbors.items()}
 
+        # Delete random branches.
         not_deleted = self._delete_subbranch(neighbors2, soma_id, distances, leaf_branch_nodes)
 
-        # subsample graphs
+        # Subsample graphs to fixed number of nodes.
         neighbors2, not_deleted = subsample_graph(neighbors=neighbors2, not_deleted=not_deleted, keep_nodes=self.n_nodes, protected=soma_id)
 
-        # get new adjacency matrix
-        adj_matrix = neighbors_to_adjacency(neighbors2, not_deleted)
+        # Compute new adjacency matrix.
+        adj_matrix = neighbors_to_adjacency_torch(neighbors2, not_deleted)
         
         assert adj_matrix.shape == (self.n_nodes, self.n_nodes), '{} {}'.format(adj_matrix.shape)
         
-        return neighbors2, adj_matrix, not_deleted, distances
+        return neighbors2, adj_matrix, not_deleted
     
     
     def _augment_node_position(self, features):
-        # extract positional features (xyz-position)
+        # Extract positional features (xyz-position).
         pos = features[:, :3]
 
-        # rotate (random 3D rotation or rotation around z-axis)
-        rot_pos = rotate_graph(pos, axis=self.axis_rot)
+        # Rotate (random 3D rotation or rotation around specific axis).
+        rot_pos = rotate_graph(pos, axis=self.rotation_axis)
 
-        # randomly jitter node position
+        # Randomly jitter node position.
         jittered_pos = jitter_node_pos(rot_pos, scale=self.jitter_var)
         
-        # jitter soma depth
-        jittered_pos = jitter_soma_depth(jittered_pos, scale=self.jitter_var_soma)
+        # Translate neuron position as a whole.
+        jittered_pos = translate_soma_pos(jittered_pos, scale=self.translate_var)
         
         features[:, :3] = jittered_pos
 
         return features
     
-    
-    def _cumulative_jitter(self, neighbors, not_deleted, features, distances):
-        
-        jitter_start_nodes = torch.randint(len(not_deleted), size=(self.n_cum_jitter,)).tolist()
-        
-        for k in jitter_start_nodes:
-            start_node = not_deleted[k]
-            neighs = neighbors[start_node]
-            
-            if len(neighs) > 1:
-
-                # figure out which neighbor points to the leaf
-                to = sorted([i for i in neighs], key=lambda x: distances[x])[-1]
-
-                nodes_to_leaf = traverse_dir(start_node, to, neighbors)
-
-                idcs = [sorted(not_deleted).index(n) for n in nodes_to_leaf]
-
-                features = cumulative_jitter(idcs, features, strength=self.cum_jitter_strength)
-            else:
-                continue
-                                           
-        return features
-    
 
     def _augment(self, cell):
-        
-        # reduce nodes to N == n_nodes via subgraph deletion + subsampling
-        neighbors2, adj_matrix, not_deleted = self._reduce_nodes(cell['neighbors'], [cell['soma_id']], cell['distances'], cell['leaf_branch_nodes'])
 
-        # extract features of not-deleted nodes
-        new_features = cell['features'][not_deleted].copy()
+        features = cell['features']
+        neighbors = cell['neighbors']
+        distances = cell['distances']
+
+        # Reduce nodes to N == n_nodes via subgraph deletion and subsampling.
+        neighbors2, adj_matrix, not_deleted = self._reduce_nodes(neighbors, [int(cell['soma_id'])], distances, cell['leaf_branch_nodes'])
+
+        # Extract features of remaining nodes.
+        new_features = features[not_deleted].copy()
        
-        # augment node position via roation and jittering
+        # Augment node position via rotation and jittering.
         new_features = self._augment_node_position(new_features)
-          
-        new_features = self._cumulative_jitter(neighbors2, not_deleted, new_features, cell['distances'])
 
         return new_features, adj_matrix
     
+    def __getsingleitem__(self, index): 
+        cell = self.cells[index]
+        return cell['features'], cell['neighbors']
     
-class AllenDataset(BaseDataset):
-    """ Dataset for Allen data. 
-    """
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs) 
-
-        # load cell ids
-        self.cell_ids = list(np.load(os.path.join(DATA, '{}_ids.npy'.format(self.mode))))
-        
-        # load cells
-        self.cells = {}
-        count = 0
-        for i, cell_id in tqdm(enumerate(self.cell_ids)):
-
-            features = np.load(os.path.join(DATA, 'skeletons', str(cell_id), 'features.npy'))
-            with open(os.path.join(DATA, 'skeletons', str(cell_id), 'neighbors.pkl'), 'rb') as f:
-                neighbors = pickle.load(f)
-
-            if len(features) >= self.n_nodes:
-                
-                # compute distances of nodes to soma
-                leaf_branch_nodes = get_leaf_branch_nodes(neighbors)
-                # using the distances we can infer the direction of an edge
-                distances = compute_node_distances(0, neighbors)
-                
-                item = {}
-                item['cell_id'] = cell_id
-                item['features'] = features
-                item['neighbors'] = neighbors
-                item['distances'] = distances
-                item['leaf_branch_nodes'] = leaf_branch_nodes
-
-                self.cells[count] = item
-                count += 1
-                        
-        self.num_samples = len(self.cells)
-
     
-#     def __getsingleitem__(self, index): 
-#         cell = self.cells[index]
-#         return cell['features'], cell['neighbors']
-
-            
     def __getitem__(self, index): 
         cell = self.cells[index]
 
-        # get two views
+        # Compute two different views through augmentations.
         features1, adj_matrix1 = self._augment(cell)
         features2, adj_matrix2 = self._augment(cell)
 
         return features1, features2, adj_matrix1, adj_matrix2
+    
 
-    
-    
 def build_dataloader(config, use_cuda=torch.cuda.is_available()):
 
-    kwargs = {'num_workers':config['data']['num_workers'], 'pin_memory':True} if use_cuda else {}
-    
-    train_loader = torch.utils.data.DataLoader(
-            AllenDataset(config, mode='train'),
+    kwargs = {'num_workers':config['data']['num_workers'], 'pin_memory':True, 'persistent_workers': True} if use_cuda else {}
+
+    train_loader = DataLoader(
+            GraphDataset(config, mode='train'),
             batch_size=config['data']['batch_size'], 
             shuffle=True, 
-            drop_last=True)
+            drop_last=True,
+            **kwargs)
 
-    val_loader = torch.utils.data.DataLoader(
-            AllenDataset(config, mode='val'),
-            batch_size=20,
+    val_dataset = GraphDataset(config, mode='val')
+    batch_size = val_dataset.num_samples if val_dataset.__len__() < config['data']['batch_size'] else config['data']['batch_size']
+    val_loader = DataLoader(
+            val_dataset,
+            batch_size=batch_size,
             shuffle=False,
-            drop_last=True)
+            drop_last=True,
+            **kwargs)
 
     return train_loader, val_loader
