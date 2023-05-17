@@ -23,7 +23,7 @@
     },
     "optimizer": {
         "lr": 0.0001,
-        "max_iter": 1000,
+        "max_iter": 100000,
         "exp_decay": 0.5
     },
     "trainer": {
