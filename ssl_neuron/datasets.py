@@ -59,7 +59,7 @@ class GraphDataset(Dataset):
                 soma_id = subsampled2new[soma_id]
 
                 # Accumulate features of subsampled nodes.
-                features = features[list(subsampled2new.keys())]
+                features = features[list(subsampled2new.keys()), :3]
 
                 leaf_branch_nodes = get_leaf_branch_nodes(neighbors)
                 # Using the distances we can infer the direction of an edge.
