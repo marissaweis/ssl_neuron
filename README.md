@@ -1,4 +1,4 @@
-# Self-supervised Representation Learning of Neuronal Morphologies
+# Self-supervised Representation Learning for Neuronal Morphologies
 
 This repository contains code to the paper [Self-Supervised Graph Representation Learning for Neuronal Morphologies](https://openreview.net/forum?id=ThhMzfrd6r) by M.A. Weis, L. Hansel, T. Lüddecke and A.S. Ecker (2023).
 
