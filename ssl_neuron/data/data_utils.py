@@ -81,23 +81,52 @@ def rotate_cell(cell_id, morphology, df):
         rot2 = R.from_euler('x', x_rot, degrees=True).as_matrix()
         rot_list2 = list(rot2.flatten()) + [0, 0, 0]
         morphology.apply_affine(rot_list2)
-    
+
     return morphology
 
 
-def scale_soma_depth(cell_id, norm_features, df):
-    """ 
-    Move neuron to soma depth realtive to pia.
-    Args:
-        cell_id: str
-        norm_features: normalized features per node
-        df: pandas dataframe containing soma depth per neuron
-    """
-    # soma depth
-    d_fac = df[df['specimen_id']==cell_id]['soma_distance_from_pia'].values[0]
-    pos3 = norm_features[:, :3].copy()
-    pos3[:, 1] -= d_fac
+def remove_axon(neighbors, features, soma_id):
+    """ Removes all nodes and edges in graph marked as axons.
 
-    norm_features[:, :3] = pos3
-    
-    return norm_features
+        Feature dimensions:
+            0 - 2: xyz coordinates
+            3: radius
+            4 - 7: One-hot encoding of compartment type:
+                4: soma
+                5: axon
+                6: dendrite
+                7: apical dendrite
+
+        Args:
+            neighbors: Dict of node id mapping to the node's neighbors.
+            features: Node features (N x 8)
+            soma id: Soma node index (int)
+
+        Returns:
+            neighbors: Updated neighbor dict without axon nodes.
+            features: Updated feature array without axon nodes (M x 8).
+            soma id: Updated soma node index.
+    """
+    # Get node indices corresponding to axon nodes.
+    axon_mask = (features[:, 5] == 1)
+    axon_idcs = list(np.where(axon_mask)[0])
+
+    # Remove axon nodes from features.
+    features = features[~axon_mask]
+
+    # Remove axon nodes from neighbors.
+    for key in axon_idcs:
+        del neighbors[key]
+
+    for key in neighbors:
+        for n in list(neighbors[key]):
+            if n in axon_idcs:
+                neighbors[key].remove(n)
+
+    # Re-map node indices to go from 0 .. M
+    neighbors, old2new = remap_neighbors(neighbors)
+
+    # Remap soma index.
+    soma_id = old2new[soma_id]
+
+    return neighbors, features, soma_id

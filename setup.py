@@ -20,7 +20,7 @@ install_requires = [
 
 
 setup(name='ssl_neuron', 
-        version='1.0',
+        version='1.1',
         description="SSL-Neuron contains the code to the paper 'Self-supervised Representation Learning of Neuronal Morphologies'",
         author="Marissa Weis",
         author_email="marissa.weis@bethgelab.org",

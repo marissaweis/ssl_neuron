@@ -355,6 +355,7 @@ def remap_neighbors(x):
 def plot_neuron(neighbors, node_feats, ax1=0, ax2=1, soma_id=0, ax=None):
     """ Plot graph of 3D neuronal morphology. """   
     colors = list(sns.dark_palette('#69d', n_colors=4))
+    _, dim = node_feats.shape
     
     if ax is None:
         fig, ax = plt.subplots(1, 1)
@@ -364,7 +365,7 @@ def plot_neuron(neighbors, node_feats, ax1=0, ax2=1, soma_id=0, ax=None):
     for i, neigh in neighbors.items():
         for j in neigh:
             n1, n2 = node_feats[i], node_feats[j]
-            c = colors[np.argmax(n2[4:])]
+            c = colors[1] if dim == 3 else colors[np.argmax(n2[4:])]
             ax.plot([n1[ax1], n2[ax1]], [n1[ax2], n2[ax2]], color=c, linewidth=1)
 
     ax.scatter(node_feats[soma_id][ax1], node_feats[soma_id][ax2], color=colors[0], s=10, zorder=10)
