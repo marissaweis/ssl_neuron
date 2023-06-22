@@ -30,7 +30,7 @@ For examples on how to load the data, train the model and perform inference with
 If you use this repository in your research, please cite:
 ```
 @article{Weis2021,
-      title={Self-supervised Representation Learning of Neuronal Morphologies}, 
+      title={Self-Supervised Graph Representation Learning for Neuronal Morphologies}, 
       author={Marissa A. Weis and Laura Hansel and Timo Lüddecke and Alexander S. Ecker},
       year={2021},
       journal={arXiv}
