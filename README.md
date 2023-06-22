@@ -31,7 +31,7 @@ If you use this repository in your research, please cite:
 ```
 @article{Weis2021,
       title={Self-supervised Representation Learning of Neuronal Morphologies}, 
-      author={Marissa A. Weis and Laura Pede and Timo Lüddecke and Alexander S. Ecker},
+      author={Marissa A. Weis and Laura Hansel and Timo Lüddecke and Alexander S. Ecker},
       year={2021},
       journal={arXiv}
 }
