@@ -29,10 +29,11 @@ For examples on how to load the data, train the model and perform inference with
 
 If you use this repository in your research, please cite:
 ```
-@article{Weis2021,
-      title={Self-Supervised Graph Representation Learning for Neuronal Morphologies}, 
-      author={Marissa A. Weis and Laura Hansel and Timo Lüddecke and Alexander S. Ecker},
-      year={2021},
-      journal={arXiv}
+@article{Weis2023,
+      title={Self-Supervised Graph Representation Learning for Neuronal Morphologies},
+      author={Marissa A. Weis and Laura Hansel and Timo L{\"u}ddecke and Alexander S. Ecker},
+      journal={Transactions on Machine Learning Research},
+      issn={2835-8856},
+      year={2023}
 }
 ```
