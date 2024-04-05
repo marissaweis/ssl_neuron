@@ -27,6 +27,7 @@ Extract data using the [Allen Software Development Kit](http://alleninstitute.gi
 
 See [extract_allen_data.ipynb](https://github.com/marissaweis/ssl_neuron/blob/main/ssl_neuron/data/extract_allen_data.ipynb) for data preprocessing.
 
+See [Data README](https://github.com/marissaweis/ssl_neuron/tree/main/ssl_neuron/data#readme) for instructions on how to use GraphDINO with your custom dataset.
 
 ## Training
 Start training GraphDINO from scratch on ABA dataset:
